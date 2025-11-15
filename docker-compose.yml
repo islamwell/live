@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: liveaudiocast-db
+    environment:
+      POSTGRES_DB: liveaudiocast
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: example
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - liveaudiocast
+
+  # Redis for caching and presence
+  redis:
+    image: redis:7-alpine
+    container_name: liveaudiocast-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - liveaudiocast
+
+  # Backend API + WebSocket + MediaSoup
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: liveaudiocast-backend
+    ports:
+      - "4000:4000"
+      - "40000-40099:40000-40099/udp"
+      - "40000-40099:40000-40099/tcp"
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: liveaudiocast
+      DB_USER: postgres
+      DB_PASSWORD: example
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # JWT
+      JWT_SECRET: dev-jwt-secret-change-in-production
+      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+
+      # MediaSoup
+      MEDIASOUP_LISTEN_IP: 0.0.0.0
+      MEDIASOUP_ANNOUNCED_IP: 127.0.0.1
+      MEDIASOUP_MIN_PORT: 40000
+      MEDIASOUP_MAX_PORT: 40099
+      MEDIASOUP_NUM_WORKERS: 2
+
+      # CORS
+      CORS_ORIGIN: "*"
+
+      # Admin
+      ADMIN_EMAIL: admin@liveaudiocast.com
+      ADMIN_PASSWORD: admin123
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - liveaudiocast
+    restart: unless-stopped
+
+  # LocalStack for S3 emulation (development only)
+  localstack:
+    image: localstack/localstack:latest
+    container_name: liveaudiocast-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: us-east-1
+      DATA_DIR: /tmp/localstack/data
+    volumes:
+      - localstack_data:/tmp/localstack
+    networks:
+      - liveaudiocast
+
+volumes:
+  postgres_data:
+  redis_data:
+  localstack_data:
+
+networks:
+  liveaudiocast:
+    driver: bridge

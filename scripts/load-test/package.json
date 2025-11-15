@@ -1,0 +1,18 @@
+{
+  "name": "liveaudiocast-load-tests",
+  "version": "1.0.0",
+  "description": "Load testing scripts for LiveAudioCast",
+  "scripts": {
+    "test:webrtc": "node webrtc-pub-sub.js",
+    "test:hls": "node hls-load-test.js",
+    "test:gradual": "node gradual-load-test.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "mediasoup-client": "^3.7.0",
+    "socket.io-client": "^4.6.1",
+    "hls.js": "^1.4.14",
+    "yargs": "^17.7.2",
+    "chalk": "^4.1.2"
+  }
+}
