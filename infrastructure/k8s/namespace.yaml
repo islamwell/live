@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: liveaudiocast
+  labels:
+    name: liveaudiocast
+    environment: production
