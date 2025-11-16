@@ -181,12 +181,19 @@ class NotificationService {
       return;
     }
 
+    // Validate broadcast.host exists
+    if (!broadcast.host) {
+      console.error(`Broadcast ${broadcast.id} has no associated host, skipping push notification`);
+      return;
+    }
+
     const timeUntil = this.getTimeUntilBroadcast(broadcast.scheduledStartTime);
+    const hostName = broadcast.host.displayName || broadcast.host.username || 'Unknown Host';
 
     const message = {
       notification: {
         title: `Upcoming: ${broadcast.title}`,
-        body: `${broadcast.host.displayName}'s broadcast starts ${timeUntil}`,
+        body: `${hostName}'s broadcast starts ${timeUntil}`,
         imageUrl: broadcast.coverImage
       },
       data: {
@@ -245,8 +252,15 @@ class NotificationService {
       return;
     }
 
+    // Validate broadcast.host exists
+    if (!broadcast.host) {
+      console.error(`Broadcast ${broadcast.id} has no associated host, skipping email notification`);
+      return;
+    }
+
     const timeUntil = this.getTimeUntilBroadcast(broadcast.scheduledStartTime);
     const broadcastUrl = `${process.env.API_URL || 'http://localhost:4000'}/broadcasts/${broadcast.id}`;
+    const hostName = broadcast.host.displayName || broadcast.host.username || 'Unknown Host';
 
     const mailOptions = {
       from: process.env.SMTP_FROM || 'LiveAudioCast <noreply@liveaudiocast.com>',
@@ -310,12 +324,12 @@ class NotificationService {
               </div>
               <div class="content">
                 <p>Hello ${user.displayName || user.username},</p>
-                <p>This is a reminder that <strong>${broadcast.host.displayName}</strong>'s broadcast is starting ${timeUntil}.</p>
+                <p>This is a reminder that <strong>${hostName}</strong>'s broadcast is starting ${timeUntil}.</p>
 
                 <div class="broadcast-info">
                   <h2>${broadcast.title}</h2>
                   ${broadcast.description ? `<p>${broadcast.description}</p>` : ''}
-                  <p><strong>Host:</strong> ${broadcast.host.displayName}</p>
+                  <p><strong>Host:</strong> ${hostName}</p>
                   <p><strong>Start Time:</strong> ${new Date(broadcast.scheduledStartTime).toLocaleString()}</p>
                 </div>
 
@@ -326,7 +340,7 @@ class NotificationService {
                 <p>Don't miss it! See you there.</p>
               </div>
               <div class="footer">
-                <p>You're receiving this because you follow ${broadcast.host.displayName}.</p>
+                <p>You're receiving this because you follow ${hostName}.</p>
                 <p>LiveAudioCast - Live Audio Broadcasting Platform</p>
               </div>
             </div>
@@ -338,12 +352,12 @@ class NotificationService {
 
         Hello ${user.displayName || user.username},
 
-        This is a reminder that ${broadcast.host.displayName}'s broadcast is starting ${timeUntil}.
+        This is a reminder that ${hostName}'s broadcast is starting ${timeUntil}.
 
         ${broadcast.title}
         ${broadcast.description || ''}
 
-        Host: ${broadcast.host.displayName}
+        Host: ${hostName}
         Start Time: ${new Date(broadcast.scheduledStartTime).toLocaleString()}
 
         Join at: ${broadcastUrl}
@@ -351,7 +365,7 @@ class NotificationService {
         Don't miss it! See you there.
 
         ---
-        You're receiving this because you follow ${broadcast.host.displayName}.
+        You're receiving this because you follow ${hostName}.
         LiveAudioCast - Live Audio Broadcasting Platform
       `
     };
@@ -366,6 +380,14 @@ class NotificationService {
   }
 
   async sendBroadcastStartNotification(broadcast) {
+    // Validate broadcast.host exists
+    if (!broadcast.host) {
+      console.error(`Broadcast ${broadcast.id} has no associated host, skipping start notification`);
+      return;
+    }
+
+    const hostName = broadcast.host.displayName || broadcast.host.username || 'Unknown Host';
+
     // Notify all followers that a broadcast has started
     const followers = await User.findAll({
       include: [
@@ -383,7 +405,7 @@ class NotificationService {
         if (follower.pushNotificationsEnabled && (follower.fcmToken || follower.apnsToken)) {
           const message = {
             notification: {
-              title: `${broadcast.host.displayName} is live!`,
+              title: `${hostName} is live!`,
               body: broadcast.title,
               imageUrl: broadcast.coverImage
             },
