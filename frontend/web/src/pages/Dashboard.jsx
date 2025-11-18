@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
-
-const API_URL = 'http://localhost:4000';
+import toast from 'react-hot-toast';
 
 export default function Dashboard({ user, onLogout, socket }) {
   const [broadcasts, setBroadcasts] = useState([]);
@@ -42,9 +41,10 @@ export default function Dashboard({ user, onLogout, socket }) {
 
   const fetchBroadcasts = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/broadcasts`);
+      const response = await axios.get('/api/broadcasts');
       setBroadcasts(response.data.broadcasts || []);
     } catch (error) {
+      toast.error('Failed to load broadcasts');
       console.error('Error fetching broadcasts:', error);
     } finally {
       setLoading(false);
@@ -56,7 +56,7 @@ export default function Dashboard({ user, onLogout, socket }) {
 
     try {
       const response = await axios.post(
-        `${API_URL}/api/broadcasts`,
+        '/api/broadcasts',
         newBroadcast,
         {
           headers: {
@@ -68,7 +68,10 @@ export default function Dashboard({ user, onLogout, socket }) {
       setBroadcasts(prev => [...prev, response.data.broadcast]);
       setNewBroadcast({ title: '', description: '' });
       setShowCreateForm(false);
+      toast.success('Broadcast created successfully!');
     } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Failed to create broadcast';
+      toast.error(errorMessage);
       console.error('Error creating broadcast:', error);
     }
   };
@@ -76,7 +79,7 @@ export default function Dashboard({ user, onLogout, socket }) {
   const handleStartBroadcast = async (broadcastId) => {
     try {
       const response = await axios.post(
-        `${API_URL}/api/broadcasts/${broadcastId}/start`,
+        `/api/broadcasts/${broadcastId}/start`,
         {},
         {
           headers: {
@@ -88,9 +91,40 @@ export default function Dashboard({ user, onLogout, socket }) {
       setBroadcasts(prev =>
         prev.map(b => (b.id === broadcastId ? response.data.broadcast : b))
       );
+      toast.success('Broadcast started!');
     } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Failed to start broadcast';
+      toast.error(errorMessage);
       console.error('Error starting broadcast:', error);
     }
+  };
+
+  const handleEndBroadcast = async (broadcastId) => {
+    try {
+      const response = await axios.post(
+        `/api/broadcasts/${broadcastId}/end`,
+        {},
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`
+          }
+        }
+      );
+
+      setBroadcasts(prev =>
+        prev.map(b => (b.id === broadcastId ? response.data.broadcast : b))
+      );
+      toast.success('Broadcast ended');
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Failed to end broadcast';
+      toast.error(errorMessage);
+      console.error('Error ending broadcast:', error);
+    }
+  };
+
+  const handleJoinBroadcast = (broadcastId) => {
+    toast.info('Join broadcast feature coming soon!');
+    console.log('Join broadcast:', broadcastId);
   };
 
   const handleSendChat = (e) => {
@@ -234,10 +268,16 @@ export default function Dashboard({ user, onLogout, socket }) {
 
                   {broadcast.status === 'active' && (
                     <div className="space-y-2">
-                      <button className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded font-medium text-sm">
+                      <button
+                        onClick={() => handleJoinBroadcast(broadcast.id)}
+                        className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded font-medium text-sm"
+                      >
                         Join Broadcast
                       </button>
-                      <button className="w-full px-4 py-2 bg-red-600 hover:bg-red-700 rounded font-medium text-sm">
+                      <button
+                        onClick={() => handleEndBroadcast(broadcast.id)}
+                        className="w-full px-4 py-2 bg-red-600 hover:bg-red-700 rounded font-medium text-sm"
+                      >
                         End Broadcasting
                       </button>
                     </div>
