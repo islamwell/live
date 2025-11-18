@@ -2,8 +2,6 @@ import { useState } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
-const API_URL = 'http://localhost:4000';
-
 export default function LoginPage({ onLogin }) {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -28,12 +26,15 @@ export default function LoginPage({ onLogin }) {
 
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-      const response = await axios.post(`${API_URL}${endpoint}`, formData);
+      const response = await axios.post(endpoint, formData);
 
       if (response.data.token && response.data.user) {
+        toast.success(`${isLogin ? 'Logged in' : 'Account created'} successfully!`);
         onLogin(response.data.user, response.data.token);
       }
     } catch (error) {
+      const errorMessage = error.response?.data?.error || error.message || 'Authentication failed';
+      toast.error(errorMessage);
       console.error('Error:', error);
     } finally {
       setLoading(false);

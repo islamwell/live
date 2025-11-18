@@ -4,8 +4,6 @@ import io from 'socket.io-client';
 import LoginPage from './pages/LoginPage';
 import Dashboard from './pages/Dashboard';
 
-const API_URL = 'http://localhost:4000';
-
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
@@ -17,7 +15,7 @@ function App() {
   useEffect(() => {
     const checkServer = async () => {
       try {
-        const response = await axios.get(`${API_URL}/health`);
+        const response = await axios.get('/health');
         if (response.data.status === 'healthy') {
           setServerStatus('online');
         }
@@ -42,7 +40,7 @@ function App() {
   // Initialize Socket.IO
   useEffect(() => {
     if (isLoggedIn && !socket) {
-      const newSocket = io(API_URL, {
+      const newSocket = io(undefined, {
         auth: {
           token
         }
@@ -66,7 +64,7 @@ function App() {
 
   const verifyToken = async (tokenToVerify) => {
     try {
-      const response = await axios.get(`${API_URL}/api/auth/me`, {
+      const response = await axios.get('/api/auth/me', {
         headers: {
           Authorization: `Bearer ${tokenToVerify}`
         }
