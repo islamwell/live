@@ -9,6 +9,7 @@ const db = require('./models');
 const socketGateway = require('./signaling/socketGateway');
 const mediasoupHandler = require('./signaling/mediasoupHandler');
 const notificationService = require('./notifications/notificationService');
+const recordingService = require('./recording/recordingService');
 
 // Import routes
 const authRoutes = require('./auth/authRoutes');
@@ -156,6 +157,9 @@ process.on('SIGINT', async () => {
     // Stop notification worker
     notificationService.stopWorker();
 
+    // Clean up recordings
+    await recordingService.cleanup();
+
     // Close database connection
     await db.sequelize.close();
 
@@ -171,8 +175,27 @@ process.on('SIGINT', async () => {
 });
 
 process.on('SIGTERM', async () => {
-  console.log('\nReceived SIGTERM, shutting down...');
-  process.exit(0);
+  console.log('\nReceived SIGTERM, shutting down gracefully...');
+
+  try {
+    // Stop notification worker
+    notificationService.stopWorker();
+
+    // Clean up recordings
+    await recordingService.cleanup();
+
+    // Close database connection
+    await db.sequelize.close();
+
+    // Close server
+    server.close(() => {
+      console.log('Server closed');
+      process.exit(0);
+    });
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+    process.exit(1);
+  }
 });
 
 // Initialize and start

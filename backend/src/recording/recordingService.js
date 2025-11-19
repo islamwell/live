@@ -15,10 +15,61 @@ const s3Client = new S3Client({
 });
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || 'liveaudiocast-recordings';
+const TEMP_RECORDING_DIR = process.env.TEMP_RECORDING_DIR || path.join(__dirname, '../../temp/recordings');
+const CHUNK_FLUSH_INTERVAL = 5000; // Flush chunks to disk every 5 seconds
+const CHUNK_BUFFER_SIZE = 100; // Flush after 100 chunks
 
 class RecordingService {
   constructor() {
     this.activeRecordings = new Map(); // broadcastId -> recording info
+    this.chunkFlushIntervals = new Map(); // broadcastId -> interval timer
+
+    // Ensure temp directory exists
+    if (!fs.existsSync(TEMP_RECORDING_DIR)) {
+      fs.mkdirSync(TEMP_RECORDING_DIR, { recursive: true });
+    }
+
+    // Recover incomplete recordings on startup
+    this.recoverIncompleteRecordings();
+  }
+
+  async recoverIncompleteRecordings() {
+    try {
+      // Find recordings that were in progress when server stopped
+      const incompleteRecordings = await Recording.findAll({
+        where: {
+          status: 'recording'
+        }
+      });
+
+      for (const recording of incompleteRecordings) {
+        console.log(`Marking incomplete recording ${recording.id} as failed`);
+        await recording.update({
+          status: 'failed',
+          metadata: {
+            error: 'Server restart during recording',
+            recoveredAt: new Date()
+          }
+        });
+
+        // Clean up temp file if exists
+        const tempFilePath = path.join(TEMP_RECORDING_DIR, `${recording.id}.webm`);
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+          console.log(`Cleaned up temp file for recording ${recording.id}`);
+        }
+      }
+
+      // Also update broadcasts that were marked as recording
+      await Broadcast.update(
+        { isRecording: false },
+        { where: { isRecording: true } }
+      );
+
+      console.log(`Recovered ${incompleteRecordings.length} incomplete recordings`);
+    } catch (error) {
+      console.error('Error recovering incomplete recordings:', error);
+    }
   }
 
   async startRecording(broadcastId, userId) {
@@ -59,16 +110,31 @@ class RecordingService {
     // Update broadcast
     await broadcast.update({ isRecording: true });
 
+    // Create temp file path for this recording
+    const tempFilePath = path.join(TEMP_RECORDING_DIR, `${recording.id}.webm`);
+
+    // Create write stream for temp file
+    const writeStream = fs.createWriteStream(tempFilePath);
+
     // Store in active recordings
     this.activeRecordings.set(broadcastId, {
       recordingId: recording.id,
       fileName,
       s3Key,
       chunks: [],
+      tempFilePath,
+      writeStream,
       startedAt: new Date()
     });
 
-    console.log(`Recording started for broadcast ${broadcastId}`);
+    // Set up periodic chunk flushing
+    const flushInterval = setInterval(() => {
+      this.flushChunks(broadcastId);
+    }, CHUNK_FLUSH_INTERVAL);
+
+    this.chunkFlushIntervals.set(broadcastId, flushInterval);
+
+    console.log(`Recording started for broadcast ${broadcastId}, temp file: ${tempFilePath}`);
 
     return recording;
   }
@@ -110,11 +176,28 @@ class RecordingService {
     // Update broadcast
     await broadcast.update({ isRecording: false });
 
+    // Stop flush interval
+    const flushInterval = this.chunkFlushIntervals.get(broadcastId);
+    if (flushInterval) {
+      clearInterval(flushInterval);
+      this.chunkFlushIntervals.delete(broadcastId);
+    }
+
+    // Flush any remaining chunks
+    await this.flushChunks(broadcastId);
+
+    // Close write stream
+    if (recordingInfo.writeStream) {
+      await new Promise((resolve) => {
+        recordingInfo.writeStream.end(resolve);
+      });
+    }
+
     // Calculate duration
     const duration = Math.floor((new Date() - recordingInfo.startedAt) / 1000);
 
     // Process recording asynchronously
-    this.processRecording(recordingInfo.recordingId, duration).catch(error => {
+    this.processRecording(recordingInfo.recordingId, duration, recordingInfo.tempFilePath).catch(error => {
       console.error('Error processing recording:', error);
     });
 
@@ -126,7 +209,7 @@ class RecordingService {
     return recording;
   }
 
-  async processRecording(recordingId, duration) {
+  async processRecording(recordingId, duration, tempFilePath) {
     try {
       const recording = await Recording.findByPk(recordingId);
 
@@ -134,19 +217,27 @@ class RecordingService {
         throw new Error('Recording not found');
       }
 
-      // In a real implementation, you would:
-      // 1. Combine audio chunks into a single file
-      // 2. Convert/transcode if needed
-      // 3. Upload to S3
-      // 4. Generate signed URL for download
-      // 5. Optionally generate transcription
-
-      // For now, we'll simulate this
       console.log(`Processing recording ${recordingId}...`);
 
-      // Simulate upload to S3
-      // In production, this would upload the actual file
-      // await this.uploadToS3(recording.s3Key, filePath);
+      // Check if temp file exists
+      if (!fs.existsSync(tempFilePath)) {
+        throw new Error(`Temp file not found: ${tempFilePath}`);
+      }
+
+      // Get file size
+      const stats = fs.statSync(tempFilePath);
+      const fileSize = stats.size;
+
+      if (fileSize === 0) {
+        throw new Error('Recording file is empty');
+      }
+
+      console.log(`Uploading recording ${recordingId} to S3 (${fileSize} bytes)...`);
+
+      // Upload to S3
+      await this.uploadToS3(recording.s3Key, tempFilePath);
+
+      console.log(`Recording ${recordingId} uploaded to S3 successfully`);
 
       // Generate signed URL for download (valid for 7 days)
       const downloadUrl = await this.getSignedDownloadUrl(recording.s3Key, 7 * 24 * 60 * 60);
@@ -156,8 +247,12 @@ class RecordingService {
         status: 'completed',
         duration,
         downloadUrl,
-        fileSize: 0 // Would be actual file size
+        fileSize
       });
+
+      // Clean up temp file
+      fs.unlinkSync(tempFilePath);
+      console.log(`Temp file deleted: ${tempFilePath}`);
 
       console.log(`Recording ${recordingId} processed successfully`);
 
@@ -171,6 +266,16 @@ class RecordingService {
           status: 'failed',
           metadata: { error: error.message }
         });
+      }
+
+      // Clean up temp file on error
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+        try {
+          fs.unlinkSync(tempFilePath);
+          console.log(`Cleaned up temp file after error: ${tempFilePath}`);
+        } catch (cleanupError) {
+          console.error('Error cleaning up temp file:', cleanupError);
+        }
       }
 
       throw error;
@@ -352,13 +457,86 @@ class RecordingService {
     return this.activeRecordings.get(broadcastId);
   }
 
+  // Flush chunks from memory buffer to disk
+  async flushChunks(broadcastId) {
+    const recordingInfo = this.activeRecordings.get(broadcastId);
+
+    if (!recordingInfo || recordingInfo.chunks.length === 0) {
+      return;
+    }
+
+    try {
+      const { writeStream, chunks } = recordingInfo;
+
+      // Write all buffered chunks to file
+      for (const chunk of chunks) {
+        writeStream.write(chunk);
+      }
+
+      console.log(`Flushed ${chunks.length} chunks to disk for broadcast ${broadcastId}`);
+
+      // Clear the buffer
+      recordingInfo.chunks = [];
+    } catch (error) {
+      console.error(`Error flushing chunks for broadcast ${broadcastId}:`, error);
+    }
+  }
+
   // Method to receive audio chunks (would be called from mediasoup)
   addAudioChunk(broadcastId, chunk) {
     const recordingInfo = this.activeRecordings.get(broadcastId);
 
     if (recordingInfo) {
       recordingInfo.chunks.push(chunk);
+
+      // Flush immediately if buffer is full
+      if (recordingInfo.chunks.length >= CHUNK_BUFFER_SIZE) {
+        this.flushChunks(broadcastId);
+      }
     }
+  }
+
+  // Clean up all active recordings on shutdown
+  async cleanup() {
+    console.log('Cleaning up recording service...');
+
+    // Stop all flush intervals
+    for (const [broadcastId, interval] of this.chunkFlushIntervals.entries()) {
+      clearInterval(interval);
+      console.log(`Stopped flush interval for broadcast ${broadcastId}`);
+    }
+    this.chunkFlushIntervals.clear();
+
+    // Flush and close all active recordings
+    for (const [broadcastId, recordingInfo] of this.activeRecordings.entries()) {
+      try {
+        // Flush remaining chunks
+        await this.flushChunks(broadcastId);
+
+        // Close write stream
+        if (recordingInfo.writeStream) {
+          await new Promise((resolve) => {
+            recordingInfo.writeStream.end(resolve);
+          });
+        }
+
+        // Update recording status to failed (interrupted)
+        await Recording.update(
+          {
+            status: 'failed',
+            metadata: { error: 'Server shutdown during recording' }
+          },
+          { where: { id: recordingInfo.recordingId } }
+        );
+
+        console.log(`Closed recording for broadcast ${broadcastId}`);
+      } catch (error) {
+        console.error(`Error cleaning up recording for broadcast ${broadcastId}:`, error);
+      }
+    }
+
+    this.activeRecordings.clear();
+    console.log('Recording service cleanup complete');
   }
 }
 
