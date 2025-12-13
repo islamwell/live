@@ -93,6 +93,14 @@ async function initialize() {
     // Initialize Socket.IO
     console.log('Initializing WebSocket gateway...');
     socketGateway.initialize(server);
+    socketGateway.setQualityNotifier((update) => {
+      if (update.action !== 'stable') {
+        console.log(
+          `Connection quality ${update.action} for broadcast ${update.broadcastId}: loss ${(update.lossRatio * 100).toFixed(2)}%, RTT ${update.rtt}ms, bitrate ${update.bitrate}bps`
+        );
+      }
+    });
+    mediasoupHandler.startHealthMonitor((update) => socketGateway.emitQualityUpdate(update));
     console.log('WebSocket gateway initialized');
 
     // Start notification worker
@@ -157,6 +165,9 @@ process.on('SIGINT', async () => {
     // Stop notification worker
     notificationService.stopWorker();
 
+    // Stop connection quality monitor
+    mediasoupHandler.stopHealthMonitor();
+
     // Clean up recordings
     await recordingService.cleanup();
 
@@ -180,6 +191,9 @@ process.on('SIGTERM', async () => {
   try {
     // Stop notification worker
     notificationService.stopWorker();
+
+    // Stop connection quality monitor
+    mediasoupHandler.stopHealthMonitor();
 
     // Clean up recordings
     await recordingService.cleanup();

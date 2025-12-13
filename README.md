@@ -121,32 +121,51 @@ A cross-platform live audio broadcasting application supporting 50+ concurrent l
 
 ### Manual Setup (Without Docker)
 
-1. **Install dependencies**
-   ```bash
+Follow these steps on Windows 11 using PowerShell (works similarly on macOS/Linux) to run everything without Docker:
+
+1. **Install prerequisites**
+   - Node.js 18+ (https://nodejs.org/en/download)
+   - PostgreSQL 15+ (create a database named `liveaudiocast`)
+   - Redis 7+ (enable it as a Windows service or run via WSL)
+   - Optional but recommended: turn off VPNs that block UDP so WebRTC can bind locally.
+
+2. **Configure the backend**
+   ```powershell
    cd backend
    npm install
+   Copy-Item .env.example .env
+   # Update .env to point at your local Postgres/Redis hosts
+   # For NAT: set MEDIASOUP_ANNOUNCED_IP to your LAN IP (Get-NetIPAddress)
    ```
 
-2. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
+3. **Start databases**
+   ```powershell
+   # PostgreSQL
+   pg_ctl start
+
+   # Redis (if using WSL, run within the distro)
+   redis-server --bind 0.0.0.0
    ```
 
-3. **Start PostgreSQL and Redis**
-   ```bash
-   # Using your preferred method (Homebrew, apt-get, etc.)
-   ```
-
-4. **Run database migrations**
-   ```bash
+4. **Migrate and seed**
+   ```powershell
    npm run migrate
+   npm run seed
    ```
 
-5. **Start the server**
-   ```bash
+5. **Launch the backend (no Docker required)**
+   ```powershell
    npm run dev
    ```
+
+6. **Launch the web listener UI**
+   ```powershell
+   cd ..\frontend
+   npm install
+   npm run dev
+   ```
+
+The backend now serves WebRTC audio for browsers and mobile clients directly. Automatic connection quality monitoring throttles bitrate when packet loss or latency spikes so live lectures do not stutter on slower networks.
 
 ## API Documentation
 
