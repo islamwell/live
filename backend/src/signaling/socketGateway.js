@@ -14,6 +14,7 @@ class SocketGateway {
   constructor() {
     this.io = null;
     this.activeSessions = new Map(); // socketId -> session info
+    this.qualityNotifier = null;
   }
 
   initialize(server) {
@@ -81,6 +82,10 @@ class SocketGateway {
 
     // Presence
     socket.on('typing', (data) => this.handleTyping(socket, data));
+  }
+
+  setQualityNotifier(callback) {
+    this.qualityNotifier = callback;
   }
 
   async handleJoin(socket, data) {
@@ -505,6 +510,24 @@ class SocketGateway {
       });
     } catch (error) {
       console.error('Error handling typing:', error);
+    }
+  }
+
+  emitQualityUpdate(update) {
+    if (!this.io) {
+      return;
+    }
+
+    this.io.to(`broadcast:${update.broadcastId}`).emit('connectionQuality', {
+      producerId: update.producerId,
+      lossRatio: update.lossRatio,
+      rtt: update.rtt,
+      bitrate: update.bitrate,
+      action: update.action
+    });
+
+    if (this.qualityNotifier) {
+      this.qualityNotifier(update);
     }
   }
 

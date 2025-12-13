@@ -6,9 +6,15 @@ class MediasoupHandler {
     this.workers = [];
     this.routers = new Map(); // broadcastId -> router
     this.transports = new Map(); // transportId -> transport
+    this.transportMetadata = new Map(); // transportId -> metadata
+    this.transportBitrateTargets = new Map(); // transportId -> bitrate plan
     this.producers = new Map(); // producerId -> producer
+    this.producerMetadata = new Map(); // producerId -> { broadcastId, transportId }
+    this.producerStatsCache = new Map();
     this.consumers = new Map(); // consumerId -> consumer
     this.nextWorkerIndex = 0;
+    this.monitorInterval = null;
+    this.qualityCallback = null;
   }
 
   async initialize() {
@@ -82,6 +88,10 @@ class MediasoupHandler {
   async createWebRtcTransport(broadcastId, type = 'send') {
     const router = this.getRouter(broadcastId) || await this.createRouter(broadcastId);
 
+    const initialBitrate = parseInt(process.env.MEDIASOUP_INITIAL_BITRATE, 10) || 800000;
+    const minimumBitrate = parseInt(process.env.MEDIASOUP_MIN_BITRATE, 10) || 64000;
+    const maximumBitrate = parseInt(process.env.MEDIASOUP_MAX_BITRATE, 10) || 1500000;
+
     const transport = await router.createWebRtcTransport({
       listenIps: [
         {
@@ -92,10 +102,10 @@ class MediasoupHandler {
       enableUdp: true,
       enableTcp: true,
       preferUdp: true,
-      initialAvailableOutgoingBitrate: 1000000,
-      minimumAvailableOutgoingBitrate: 600000,
+      initialAvailableOutgoingBitrate: initialBitrate,
+      minimumAvailableOutgoingBitrate: Math.min(initialBitrate, maximumBitrate, minimumBitrate),
       maxSctpMessageSize: 262144,
-      maxIncomingBitrate: 1500000
+      maxIncomingBitrate: maximumBitrate
     });
 
     transport.on('dtlsstatechange', (dtlsState) => {
@@ -106,10 +116,19 @@ class MediasoupHandler {
 
     transport.on('close', () => {
       this.transports.delete(transport.id);
+      this.transportMetadata.delete(transport.id);
+      this.transportBitrateTargets.delete(transport.id);
       console.log(`Transport ${transport.id} closed`);
     });
 
     this.transports.set(transport.id, transport);
+    this.transportMetadata.set(transport.id, { broadcastId, type });
+    this.transportBitrateTargets.set(transport.id, {
+      targetBitrate: initialBitrate,
+      initialBitrate,
+      minimumBitrate,
+      maximumBitrate
+    });
 
     return {
       id: transport.id,
@@ -150,6 +169,13 @@ class MediasoupHandler {
     });
 
     this.producers.set(producer.id, producer);
+    const metadata = this.transportMetadata.get(transportId);
+    if (metadata) {
+      this.producerMetadata.set(producer.id, {
+        broadcastId: metadata.broadcastId,
+        transportId
+      });
+    }
     console.log(`Producer ${producer.id} created for ${kind}`);
 
     return {
@@ -258,6 +284,8 @@ class MediasoupHandler {
     if (producer) {
       producer.close();
       this.producers.delete(producerId);
+      this.producerMetadata.delete(producerId);
+      this.producerStatsCache.delete(producerId);
       console.log(`Producer ${producerId} closed`);
     }
   }
@@ -278,6 +306,8 @@ class MediasoupHandler {
     if (transport) {
       transport.close();
       this.transports.delete(transportId);
+      this.transportMetadata.delete(transportId);
+      this.transportBitrateTargets.delete(transportId);
       console.log(`Transport ${transportId} closed`);
     }
   }
@@ -312,6 +342,91 @@ class MediasoupHandler {
       producers: this.producers.size,
       consumers: this.consumers.size
     };
+  }
+
+  startHealthMonitor(callback) {
+    if (this.monitorInterval) {
+      return;
+    }
+
+    this.qualityCallback = callback;
+
+    this.monitorInterval = setInterval(async () => {
+      for (const [producerId, producer] of this.producers.entries()) {
+        await this.evaluateProducerHealth(producerId, producer);
+      }
+    }, parseInt(process.env.MEDIASOUP_HEALTH_INTERVAL_MS, 10) || 5000);
+  }
+
+  stopHealthMonitor() {
+    if (this.monitorInterval) {
+      clearInterval(this.monitorInterval);
+      this.monitorInterval = null;
+    }
+  }
+
+  async evaluateProducerHealth(producerId, producer) {
+    try {
+      const stats = await producer.getStats();
+      const outboundStats = stats.find((stat) => stat.type === 'outbound-rtp' || stat.type === 'outbound_rtp');
+
+      if (!outboundStats) {
+        return;
+      }
+
+      const previousStats = this.producerStatsCache.get(producerId) || outboundStats;
+      const packetsSentDelta = outboundStats.packetsSent - (previousStats.packetsSent || 0);
+      const packetsLostDelta = outboundStats.packetsLost - (previousStats.packetsLost || 0);
+      const lossRatio = packetsSentDelta > 0 ? packetsLostDelta / packetsSentDelta : 0;
+      const rtt = outboundStats.roundTripTime || outboundStats.rtt || 0;
+
+      const transport = producer.transport;
+      const transportMeta = this.transportMetadata.get(transport.id);
+      const bitratePlan = this.transportBitrateTargets.get(transport.id);
+
+      if (bitratePlan) {
+        let action = 'stable';
+
+        if (lossRatio > 0.05 || rtt > 400) {
+          const lowered = Math.max(
+            Math.floor(bitratePlan.targetBitrate * 0.75),
+            bitratePlan.minimumBitrate
+          );
+
+          if (lowered < bitratePlan.targetBitrate) {
+            await transport.setMaxIncomingBitrate(lowered);
+            bitratePlan.targetBitrate = lowered;
+            action = 'reduced';
+          }
+        } else if (lossRatio < 0.02 && rtt < 200 && bitratePlan.targetBitrate < bitratePlan.initialBitrate) {
+          const raised = Math.min(
+            Math.floor(bitratePlan.targetBitrate * 1.1),
+            bitratePlan.initialBitrate
+          );
+
+          if (raised > bitratePlan.targetBitrate) {
+            await transport.setMaxIncomingBitrate(raised);
+            bitratePlan.targetBitrate = raised;
+            action = 'recovered';
+          }
+        }
+
+        if (this.qualityCallback && transportMeta) {
+          this.qualityCallback({
+            broadcastId: transportMeta.broadcastId,
+            producerId,
+            lossRatio,
+            rtt,
+            bitrate: bitratePlan.targetBitrate,
+            action
+          });
+        }
+      }
+
+      this.producerStatsCache.set(producerId, outboundStats);
+    } catch (error) {
+      console.error('Error evaluating producer health:', error.message);
+    }
   }
 
   async getProducerStats(producerId) {
